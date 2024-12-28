@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Warped Spacetime Demo - Starfighter Simulation</title>
+  <!-- Three.js (r152) CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
+  <!-- Include OrbitControls for debugging (optional) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    /* Basic CSS reset */
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      background: #000; /* fallback */
+    }
+    /* The Three.js canvas fills the screen */
+    #sceneCanvas {
+      display: block;
+    }
+    /* Speed readout overlay */
+    #speedDisplay {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #ffffff;
+      font-size: 24px;
+      font-family: sans-serif;
+      z-index: 9999;
+      pointer-events: none;
+
+      /* Style improvements */
+      background-color: rgba(0, 0, 0, 0.5);
+      padding: 8px 12px;
+      border-radius: 6px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Speedometer display -->
+  <div id="speedDisplay">Speed: 0.00 c</div>
+  <!-- Canvas for Three.js to render into -->
+  <canvas id="sceneCanvas"></canvas>
+
+  <script>
+    //////////////////////////////////////////////////////////////////////////
+    // Global references and variables
+    //////////////////////////////////////////////////////////////////////////
+    let scene, camera, renderer, controls; // Added controls for debugging
+    let planeMesh, planeMat;
+    let shipMesh;
+    let clock;
+
+    // Control state
+    const controlsState = {
+      moveLeft: false,
+      moveRight: false,
+      moveUp: false,
+      moveDown: false,
+      tiltX: 0, // For mobile
+      tiltY: 0  // For mobile
+    };
+
+    // Movement parameters
+    const ACCELERATION = 10.0; // Acceleration rate
+    const DECELERATION = 8.0;  // Deceleration rate
+    const MAX_SPEED = 50.0;    // Maximum speed (units per second)
+
+    // Velocity vectors
+    const velocity = {
+      x: 0,
+      y: 0,
+      z: 0
+    };
+
+    // Warp speed effect
+    let speedLines;
+    const SPEED_LINE_COUNT = 500;
+    const speedLineGeometry = new THREE.BufferGeometry();
+    const speedLinePositions = new Float32Array(SPEED_LINE_COUNT * 3);
+    const speedLineColors = new Float32Array(SPEED_LINE_COUNT * 3);
+    const speedLineMaterial = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.5,
+      blending: THREE.AdditiveBlending,
+      transparent: true
+    });
+
+    //////////////////////////////////////////////////////////////////////////
+    // Initialization
+    //////////////////////////////////////////////////////////////////////////
+    function init() {
+      // 1. Create the scene
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000); // black background
+
+      // (Optional) Add a starfield backdrop using Points.
+      createStarfield(scene);
+
+      // 2. Create a perspective camera
+      camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      camera.position.set(0, 5, 15);
+
+      // 3. Create the renderer
+      const canvas = document.getElementById('sceneCanvas');
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setClearColor(0x000000, 1);
+
+      // 4. (Optional) Add OrbitControls for debugging
+      // Uncomment the following lines if you want to use OrbitControls
+      // controls = new THREE.OrbitControls(camera, renderer.domElement);
+      // controls.enableDamping = true;
+      // controls.dampingFactor = 0.05;
+
+      // 5. Lights
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+      scene.add(ambientLight);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(10, 10, 5);
+      scene.add(dirLight);
+
+      // 6. Warped spacetime plane
+      const planeGeom = new THREE.PlaneGeometry(200, 200, 100, 100);
+      planeGeom.rotateX(-Math.PI / 2); // rotate so it's horizontal
+      planeMat = new THREE.MeshStandardMaterial({
+        color: 0x00ff00,
+        wireframe: true,
+        side: THREE.DoubleSide
+      });
+      planeMesh = new THREE.Mesh(planeGeom, planeMat);
+      scene.add(planeMesh);
+
+      // We'll track wave animation parameters in userData
+      planeMesh.userData.waveTime = 0;
+      planeMesh.userData.waveShift = 0;
+      planeMesh.userData.waveAmplitude = 0.5;
+
+      // 7. Create the starfighter
+      shipMesh = createStarfighter();
+
+      // Rotate around Y so the nose faces -Z
+      shipMesh.rotation.y = Math.PI;
+
+      // Initial position above the plane
+      shipMesh.position.set(0, 2, 0);
+      scene.add(shipMesh);
+
+      // 8. Listen for window resize
+      window.addEventListener('resize', onWindowResize);
+
+      // 9. Initialize controls based on device type
+      if (isMobileDevice()) {
+        initDeviceControls();
+      } else {
+        initKeyboardControls();
+      }
+
+      // 10. Initialize warp speed effect
+      initSpeedLines();
+
+      // 11. Clock for animations
+      clock = new THREE.Clock();
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Function to detect if the device is mobile
+    //////////////////////////////////////////////////////////////////////////
+    function isMobileDevice() {
+      return /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Initialize keyboard controls for desktop
+    //////////////////////////////////////////////////////////////////////////
+    function initKeyboardControls() {
+      window.addEventListener('keydown', (event) => {
+        switch (event.code) {
+          case 'ArrowLeft':
+          case 'KeyA':
+            controlsState.moveLeft = true;
+            break;
+          case 'ArrowRight':
+          case 'KeyD':
+            controlsState.moveRight = true;
+            break;
+          case 'ArrowUp':
+          case 'KeyW':
+            controlsState.moveUp = true;
+            break;
+          case 'ArrowDown':
+          case 'KeyS':
+            controlsState.moveDown = true;
+            break;
+        }
+      });
+
+      window.addEventListener('keyup', (event) => {
+        switch (event.code) {
+          case 'ArrowLeft':
+          case 'KeyA':
+            controlsState.moveLeft = false;
+            break;
+          case 'ArrowRight':
+          case 'KeyD':
+            controlsState.moveRight = false;
+            break;
+          case 'ArrowUp':
+          case 'KeyW':
+            controlsState.moveUp = false;
+            break;
+          case 'ArrowDown':
+          case 'KeyS':
+            controlsState.moveDown = false;
+            break;
+        }
+      });
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Initialize device orientation controls for mobile
+    //////////////////////////////////////////////////////////////////////////
+    function initDeviceControls() {
+      if (window.DeviceOrientationEvent) {
+        window.addEventListener('deviceorientation', (event) => {
+          // gamma: left-to-right tilt in degrees, where right is positive
+          // beta: front-to-back tilt in degrees, where front is positive
+          controlsState.tiltX = event.gamma || 0; // X-axis
+          controlsState.tiltY = event.beta || 0;  // Y-axis
+        });
+      } else {
+        console.warn('Device Orientation not supported');
+      }
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Function to create a stylized starfighter using multiple geometric parts
+    //////////////////////////////////////////////////////////////////////////
+    function createStarfighter() {
+      const shipGroup = new THREE.Group();
+
+      //
+      // 1. Fuselage: a sleek, cylindrical body
+      //
+      const fuselageLength = 4;
+      const fuselageRadius = 0.6;
+      const fuselageGeom = new THREE.CylinderGeometry(
+        fuselageRadius, // radiusTop
+        fuselageRadius, // radiusBottom
+        fuselageLength, // height
+        16              // radialSegments
+      );
+      // Rotate so cylinder extends along Z-axis, instead of Y
+      fuselageGeom.rotateX(Math.PI / 2);
+
+      const fuselageMat = new THREE.MeshStandardMaterial({
+        color: 0x777777,
+        metalness: 0.5,
+        roughness: 0.4
+      });
+      const fuselageMesh = new THREE.Mesh(fuselageGeom, fuselageMat);
+      fuselageMesh.position.set(0, 0, 0);
+      shipGroup.add(fuselageMesh);
+
+      //
+      // 2. Cockpit: a domed canopy near the front
+      //
+      const cockpitRadius = 0.4;
+      const cockpitGeom = new THREE.SphereGeometry(cockpitRadius, 16, 16);
+      // Scale it slightly to make it more “stretched”
+      cockpitGeom.scale(1.0, 0.7, 1.2);
+      const cockpitMat = new THREE.MeshStandardMaterial({
+        color: 0x2244cc,
+        metalness: 0.3,
+        roughness: 0.2,
+        emissive: 0x001133,
+        emissiveIntensity: 0.5
+      });
+      const cockpitMesh = new THREE.Mesh(cockpitGeom, cockpitMat);
+      // Place it near the front of the fuselage
+      cockpitMesh.position.set(0, 0.4, fuselageLength / 2 - 0.6);
+      shipGroup.add(cockpitMesh);
+
+      //
+      // 3. Wings: Swept-back trapezoids on each side
+      //
+      const wingWidth = 3;
+      const wingHeight = 0.05;
+      const wingLength = 1.5;
+      // We'll build one wing using a BoxGeometry, then clone it
+      const wingGeom = new THREE.BoxGeometry(wingWidth, wingHeight, wingLength);
+      const wingMat = new THREE.MeshStandardMaterial({
+        color: 0x444444,
+        metalness: 0.4,
+        roughness: 0.6
+      });
+      // Left wing
+      const leftWing = new THREE.Mesh(wingGeom, wingMat);
+      leftWing.position.set(
+        -wingWidth / 2 - fuselageRadius * 0.5, // x
+        0,                                    // y
+        0.5                                   // z
+      );
+      leftWing.rotation.y = -Math.PI / 6; // tilt backward
+      shipGroup.add(leftWing);
+
+      // Right wing (clone and mirror)
+      const rightWing = leftWing.clone();
+      rightWing.position.x = wingWidth / 2 + fuselageRadius * 0.5;
+      rightWing.rotation.y = Math.PI / 6; // tilt backward the other way
+      shipGroup.add(rightWing);
+
+      //
+      // 4. Engines / Thrusters at the rear
+      //
+      const engineRadius = 0.3;
+      const engineLength = 1.0;
+      const engineGeom = new THREE.CylinderGeometry(
+        engineRadius,
+        engineRadius,
+        engineLength,
+        8
+      );
+      // Rotate to align with Z-axis
+      engineGeom.rotateX(Math.PI / 2);
+
+      const engineMat = new THREE.MeshStandardMaterial({
+        color: 0x999999,
+        metalness: 0.8,
+        roughness: 0.3,
+        emissive: 0x333333,
+        emissiveIntensity: 0.2
+      });
+
+      // Place two engines near the back, on each side
+      const leftEngine = new THREE.Mesh(engineGeom, engineMat);
+      leftEngine.position.set(
+        -fuselageRadius * 1.2, 
+        0, 
+        -fuselageLength / 2 - engineLength / 2
+      );
+      shipGroup.add(leftEngine);
+
+      const rightEngine = leftEngine.clone();
+      rightEngine.position.x = fuselageRadius * 1.2;
+      shipGroup.add(rightEngine);
+
+      //
+      // 5. Tail Fin: a small vertical stabilizer on top
+      //
+      const finWidth = 0.05;
+      const finHeight = 1.0;
+      const finLength = 0.7;
+      const finGeom = new THREE.BoxGeometry(finWidth, finHeight, finLength);
+      const finMat = new THREE.MeshStandardMaterial({
+        color: 0x444444,
+        metalness: 0.4,
+        roughness: 0.7
+      });
+      const finMesh = new THREE.Mesh(finGeom, finMat);
+      finMesh.position.set(
+        0,
+        finHeight / 2,
+        -fuselageLength / 2 + finLength / 2
+      );
+      shipGroup.add(finMesh);
+
+      return shipGroup;
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Handle window resize
+    //////////////////////////////////////////////////////////////////////////
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Main animation loop
+    //////////////////////////////////////////////////////////////////////////
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const delta = clock.getDelta(); // seconds since last frame
+
+      // Update controls (optional if using OrbitControls)
+      // if (controls) controls.update();
+
+      bendPlane(planeMesh, delta);
+      moveShip(shipMesh, delta);
+      updateCamera(shipMesh);
+      updateSpeedLines();
+
+      renderer.render(scene, camera);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Bend the plane: continuous wave motion
+    //////////////////////////////////////////////////////////////////////////
+    function bendPlane(plane, delta) {
+      // Increase waveTime and waveShift every frame
+      plane.userData.waveTime += delta * 2.0;
+      plane.userData.waveShift += delta * 0.8;
+
+      const position = plane.geometry.attributes.position;
+      const posArray = position.array; // [x, y, z, x, y, z, ...]
+
+      for (let i = 0; i < posArray.length; i += 3) {
+        const x = posArray[i];
+        const z = posArray[i + 2];
+
+        // The wave is a sine function that moves along z
+        const wave = Math.sin(
+          plane.userData.waveTime + (z - plane.userData.waveShift) * 0.4
+        ) * plane.userData.waveAmplitude;
+
+        // Update the y-coordinate of each vertex
+        position.setY(i / 3, wave);
+      }
+
+      position.needsUpdate = true;
+      plane.geometry.computeVertexNormals();
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Compute wave height for a given (x, z)
+    //////////////////////////////////////////////////////////////////////////
+    function getWaveHeight(plane, x, z) {
+      return (
+        Math.sin(
+          plane.userData.waveTime + (z - plane.userData.waveShift) * 0.4
+        ) * plane.userData.waveAmplitude
+      );
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Move the ship: smooth acceleration and velocity-based movement
+    //////////////////////////////////////////////////////////////////////////
+    function moveShip(ship, delta) {
+      // Handle forward acceleration (constant speed forward)
+      velocity.z -= ACCELERATION * delta;
+      if (velocity.z < -MAX_SPEED) velocity.z = -MAX_SPEED;
+
+      // Apply damping to velocities for smooth deceleration
+      velocity.x -= velocity.x * DECELERATION * delta;
+      velocity.y -= velocity.y * DECELERATION * delta;
+      velocity.z -= velocity.z * DECELERATION * delta; // Optional: decelerate forward speed
+
+      // Update ship position based on velocity
+      ship.position.x += velocity.x * delta;
+      ship.position.y += velocity.y * delta;
+      ship.position.z += velocity.z * delta;
+
+      // Apply user controls
+      applyControls(ship, delta);
+
+      // Keep it on top of the wave
+      const waveHeight = getWaveHeight(planeMesh, ship.position.x, ship.position.z);
+      ship.position.y = Math.max(waveHeight + 1.0, ship.position.y); // Prevent sinking below wave
+
+      // Boundary constraints (optional)
+      const boundary = 50;
+      ship.position.x = THREE.MathUtils.clamp(ship.position.x, -boundary, boundary);
+      ship.position.y = THREE.MathUtils.clamp(ship.position.y, 1.0, 20);
+      ship.position.z = THREE.MathUtils.clamp(ship.position.z, -1000, 1000);
+
+      // Update speed display
+      const speedDisplay = document.getElementById('speedDisplay');
+      const currentSpeed = Math.abs(velocity.z) / MAX_SPEED; // Normalize speed
+      speedDisplay.textContent = `Speed: ${(currentSpeed).toFixed(2)} c`;
+
+      // Visual updates: color shift on plane & wave amplitude
+      updatePlaneColor(currentSpeed);
+      planeMesh.userData.waveAmplitude = 0.5 + 0.5 * (currentSpeed); // range 0.5 to 1.0
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Apply user controls to the ship's movement
+    //////////////////////////////////////////////////////////////////////////
+    function applyControls(ship, delta) {
+      const controlSpeed = 30.0; // Adjust as needed for responsiveness
+
+      if (isMobileDevice()) {
+        // Mobile controls using device orientation (tilt)
+        // Smooth the tilt values using interpolation
+        const targetTiltX = THREE.MathUtils.clamp(controlsState.tiltX, -30, 30);
+        const targetTiltY = THREE.MathUtils.clamp(controlsState.tiltY, -30, 30);
+
+        // Apply smoothing (low-pass filter)
+        controlsState.tiltX = THREE.MathUtils.lerp(controlsState.tiltX, targetTiltX, 0.1);
+        controlsState.tiltY = THREE.MathUtils.lerp(controlsState.tiltY, targetTiltY, 0.1);
+
+        // Map tilt to velocity
+        velocity.x += (targetTiltX / 30) * controlSpeed * delta;
+        velocity.y += (-targetTiltY / 30) * controlSpeed * delta; // Inverted for intuitive control
+
+      } else {
+        // Desktop controls using keyboard
+        if (controlsState.moveLeft) {
+          velocity.x -= controlSpeed * delta;
+        }
+        if (controlsState.moveRight) {
+          velocity.x += controlSpeed * delta;
+        }
+        if (controlsState.moveUp) {
+          velocity.y += controlSpeed * delta;
+        }
+        if (controlsState.moveDown) {
+          velocity.y -= controlSpeed * delta;
+        }
+      }
+
+      // Clamp velocities to prevent excessive speed
+      velocity.x = THREE.MathUtils.clamp(velocity.x, -MAX_SPEED, MAX_SPEED);
+      velocity.y = THREE.MathUtils.clamp(velocity.y, -MAX_SPEED, MAX_SPEED);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Update the plane’s color based on speed from green (at 0) to red (at 1c)
+    //////////////////////////////////////////////////////////////////////////
+    function updatePlaneColor(currentSpeed) {
+      const minHue = 120; // green
+      const maxHue = 0;   // red
+      const hue = (1 - currentSpeed) * minHue + currentSpeed * maxHue;
+      planeMat.color.setHSL(hue / 360, 1, 0.5);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Update camera: follow behind and slightly above the ship with smooth motion
+    //////////////////////////////////////////////////////////////////////////
+    function updateCamera(ship) {
+      // Desired camera position relative to the ship
+      const relativeCameraOffset = new THREE.Vector3(0, 5, 15);
+      const cameraOffset = relativeCameraOffset.applyMatrix4(ship.matrixWorld);
+
+      // Smooth camera movement using lerp
+      camera.position.lerp(cameraOffset, 0.1);
+      camera.lookAt(ship.position);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Create a simple starfield effect
+    //////////////////////////////////////////////////////////////////////////
+    function createStarfield(scene) {
+      const starCount = 10000;
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(starCount * 3);
+      const colors = new Float32Array(starCount * 3);
+
+      for (let i = 0; i < starCount; i++) {
+        positions[i * 3 + 0] = (Math.random() - 0.5) * 1000;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 1000;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 1000;
+
+        const color = new THREE.Color();
+        color.setHSL(0.6, 0.8, 0.9); // light bluish stars
+        colors[i * 3 + 0] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+      }
+
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 1,
+        vertexColors: true
+      });
+
+      const stars = new THREE.Points(geometry, material);
+      scene.add(stars);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Initialize warp speed effect (speed lines)
+    //////////////////////////////////////////////////////////////////////////
+    function initSpeedLines() {
+      for (let i = 0; i < SPEED_LINE_COUNT; i++) {
+        // Initialize positions randomly around the ship
+        speedLinePositions[i * 3 + 0] = (Math.random() - 0.5) * 200;
+        speedLinePositions[i * 3 + 1] = (Math.random() - 0.5) * 200;
+        speedLinePositions[i * 3 + 2] = Math.random() * -500; // Ahead of the ship
+
+        // Set all colors to white
+        speedLineColors[i * 3 + 0] = 1.0;
+        speedLineColors[i * 3 + 1] = 1.0;
+        speedLineColors[i * 3 + 2] = 1.0;
+      }
+
+      speedLineGeometry.setAttribute('position', new THREE.BufferAttribute(speedLinePositions, 3));
+      speedLineGeometry.setAttribute('color', new THREE.BufferAttribute(speedLineColors, 3));
+
+      speedLines = new THREE.Points(speedLineGeometry, speedLineMaterial);
+      scene.add(speedLines);
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Update speed lines to create a warp effect
+    //////////////////////////////////////////////////////////////////////////
+    function updateSpeedLines() {
+      for (let i = 0; i < SPEED_LINE_COUNT; i++) {
+        // Move each speed line forward based on ship's velocity
+        speedLinePositions[i * 3 + 2] += Math.abs(velocity.z) * 0.1;
+
+        // If the speed line is behind the ship, reposition it ahead
+        if (speedLinePositions[i * 3 + 2] > 100) {
+          speedLinePositions[i * 3 + 2] = -500;
+          speedLinePositions[i * 3 + 0] = (Math.random() - 0.5) * 200;
+          speedLinePositions[i * 3 + 1] = (Math.random() - 0.5) * 200;
+        }
+
+        // Optional: Fade out the speed lines based on distance
+        const distance = Math.abs(speedLinePositions[i * 3 + 2]);
+        const alpha = THREE.MathUtils.clamp(1.0 - distance / 100, 0.0, 1.0);
+        speedLineMaterial.opacity = alpha;
+      }
+
+      speedLineGeometry.attributes.position.needsUpdate = true;
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    // Kick off
+    //////////////////////////////////////////////////////////////////////////
+    init();
+    animate();
+  </script>
+</body>
+</html>
